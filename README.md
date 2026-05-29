@@ -87,11 +87,29 @@ Claude Code has native LSP support for basic navigation (go-to-definition, find 
 | `ROSLYN_TIMEOUT_SECONDS` | Timeout for long-running operations | `30` |
 | `ROSLYN_MAX_DIAGNOSTICS` | Maximum diagnostics to return | `100` |
 | `ROSLYN_ENABLE_SEMANTIC_CACHE` | Enable semantic model caching | `true` (set to `false` to disable) |
-| `SHARPLENS_WATCH_MODE` | Auto-sync documents on file changes (no manual `sync_documents` needed) | `false` |
+| `SHARPLENS_WATCH_MODE` | `true` to enable auto-sync on file changes. See [Filesystem Watcher Lifecycle](#filesystem-watcher-lifecycle). | `false` |
 | `SHARPLENS_WATCH_DEBOUNCE_MS` | Debounce window for filesystem watcher (ms) | `300` |
 | `SHARPLENS_WATCH_EXTENSIONS` | Watched file extensions | `.cs,.razor,.cshtml` |
 
 If `DOTNET_SOLUTION_PATH` is not set, you must call the `load_solution` tool before using other tools.
+
+### Filesystem Watcher Lifecycle
+
+When `SHARPLENS_WATCH_MODE=true`, SharpLensMcp monitors the solution directory for file changes using OS kernel events (`inotify` on Linux, `ReadDirectoryChangesW` on Windows). No polling.
+
+**Start** — The watcher is created at the end of `load_solution` (or auto-load from `DOTNET_SOLUTION_PATH`). If a watcher is already running from a previous `load_solution`, it is stopped first.
+
+**Watch** — The solution directory is watched recursively for `*.cs`, `*.razor`, `*.cshtml` files (configurable via `SHARPLENS_WATCH_EXTENSIONS`). The watcher listens for `Changed`, `Created`, `Deleted`, and `Renamed` events.
+
+**Debounce** — Each file event resets a 300ms timer (configurable via `SHARPLENS_WATCH_DEBOUNCE_MS`). Only after 300ms of silence does the watcher call `sync_documents` internally. Rapid successive saves (e.g., IDE auto-save) are coalesced into a single sync.
+
+**Self-recovery** — If the OS filesystem event buffer overflows (e.g., during builds, `git checkout`, NuGet restore), the watcher logs the error and restarts itself automatically.
+
+**Stop** — The watcher is stopped when:
+- A new solution is loaded via `load_solution` (old watcher disposed, new one starts)
+- The server process shuts down (MCP client disconnects)
+
+> **Known limitation:** The watcher's `sync_documents` call runs on a background thread. If an MCP tool is executing on the main thread simultaneously, both threads may modify `_solution` concurrently. This is rare in practice (300ms debounce gap between agent actions). To avoid it entirely, don't edit files while the agent is actively using SharpLensMcp tools.
 
 ## Blazor / Razor Support
 
