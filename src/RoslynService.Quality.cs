@@ -506,7 +506,8 @@ public partial class RoslynService
         EnsureSolutionLoaded();
 
         var project = _solution!.Projects.FirstOrDefault(
-            p => p.Name.Equals(projectName, StringComparison.OrdinalIgnoreCase));
+            p => p.Name.Equals(projectName, StringComparison.OrdinalIgnoreCase) ||
+                 (p.FilePath != null && p.FilePath.Contains(projectName, StringComparison.OrdinalIgnoreCase)));
         if (project == null)
         {
             return CreateErrorResponse(

@@ -28,6 +28,7 @@ public partial class RoslynService
     private readonly int _timeoutSeconds;
     private readonly bool _useAbsolutePaths;
     private readonly bool _enableCache;
+    private readonly SemaphoreSlim _syncLock = new(1, 1);
 
     private DateTime? _solutionLoadedAt;
 
@@ -325,23 +326,33 @@ public partial class RoslynService
             );
         }
 
+        // Serialize all sync operations — the file watcher and explicit agent calls
+        // can race, and both mutate _solution concurrently.
+        await _syncLock.WaitAsync();
+        try
+        {
+
         var solutionDir = Path.GetDirectoryName(_solution.FilePath);
         var updated = new List<string>();
         var added = new List<string>();
         var removed = new List<string>();
         var errors = new List<object>();
 
-        // Get all documents in solution for lookup
+        // Get all documents in solution for lookup (GroupBy handles linked/shared files
+        // that resolve to the same full path, avoiding "An item with the same key" errors).
+        // Exclude SharpLensMcp-generated virtual razor documents — they don't exist on
+        // disk and must not be treated as deleted/missing.
+        var razorGeneratedDocIds = new HashSet<DocumentId>(
+            _razorDocuments.Values.Where(r => r != null).Select(r => r!.VirtualDocumentId));
         var documentsByPath = _solution.Projects
             .SelectMany(p => p.Documents)
-            .Where(d => d.FilePath != null)
-            .ToDictionary(
+            .Where(d => d.FilePath != null && !razorGeneratedDocIds.Contains(d.Id))
+            .GroupBy(
                 d => Path.GetFullPath(d.FilePath!),
-                d => d,
                 PathComparison == StringComparison.OrdinalIgnoreCase
                     ? StringComparer.OrdinalIgnoreCase
-                    : StringComparer.Ordinal
-            );
+                    : StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First());
 
         // Determine which files to sync
         IEnumerable<string> pathsToSync;
@@ -480,6 +491,11 @@ public partial class RoslynService
                 "search_symbols to find updated code"
             }
         );
+        }
+        finally
+        {
+            _syncLock.Release();
+        }
     }
 
     /// <summary>

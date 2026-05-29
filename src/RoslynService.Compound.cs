@@ -21,7 +21,22 @@ public partial class RoslynService
         Document document;
         try
         {
-            document = await GetDocumentAsync(filePath);
+            // .razor files: translate line range to generated C# virtual document
+            if (filePath.EndsWith(".razor", StringComparison.OrdinalIgnoreCase))
+            {
+                var mapped = MapRazorLineRangeToCSharp(filePath, startLine, endLine);
+                if (mapped == null)
+                    return CreateErrorResponse(
+                        ErrorCodes.AnalysisFailed,
+                        "Could not map .razor line range to generated C# — region may be pure markup",
+                        hint: "Select a range inside an @code { } block or C# expression",
+                        context: new { filePath, startLine, endLine });
+                (document, startLine, endLine) = (mapped.Value.Document, mapped.Value.StartLine, mapped.Value.EndLine);
+            }
+            else
+            {
+                document = await GetDocumentAsync(filePath);
+            }
         }
         catch (FileNotFoundException)
         {
@@ -138,7 +153,22 @@ public partial class RoslynService
         Document document;
         try
         {
-            document = await GetDocumentAsync(filePath);
+            // .razor files: translate line range to generated C# virtual document
+            if (filePath.EndsWith(".razor", StringComparison.OrdinalIgnoreCase))
+            {
+                var mapped = MapRazorLineRangeToCSharp(filePath, startLine, endLine);
+                if (mapped == null)
+                    return CreateErrorResponse(
+                        ErrorCodes.AnalysisFailed,
+                        "Could not map .razor line range to generated C# — region may be pure markup",
+                        hint: "Select a range inside an @code { } block or C# expression",
+                        context: new { filePath, startLine, endLine });
+                (document, startLine, endLine) = (mapped.Value.Document, mapped.Value.StartLine, mapped.Value.EndLine);
+            }
+            else
+            {
+                document = await GetDocumentAsync(filePath);
+            }
         }
         catch (FileNotFoundException)
         {
@@ -645,6 +675,16 @@ public partial class RoslynService
         if (enclosingBlock != null && enclosingBlock.Statements.Count > 0)
         {
             return (enclosingBlock.Statements.First(), enclosingBlock.Statements.Last());
+        }
+
+        // If we landed on a type or method declaration (common with .razor-generated C#
+        // where line ranges map to class-level scope), look inside for a method body.
+        if (node is TypeDeclarationSyntax or MethodDeclarationSyntax)
+        {
+            var firstBlock = node.DescendantNodes().OfType<BlockSyntax>()
+                .FirstOrDefault(b => b.Statements.Count > 0);
+            if (firstBlock != null)
+                return (firstBlock.Statements.First(), firstBlock.Statements.Last());
         }
 
         return (null, null);

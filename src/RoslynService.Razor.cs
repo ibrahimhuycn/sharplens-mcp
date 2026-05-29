@@ -18,8 +18,24 @@ public partial class RoslynService
     /// </summary>
     internal static bool IsRazorProject(Project project)
     {
-        return project.MetadataReferences.Any(r =>
-            (r.Display ?? "").Contains("Microsoft.AspNetCore.Components"));
+        // Check metadata references — Blazor projects reference Components, Razor, etc.
+        if (project.MetadataReferences.Any(r =>
+        {
+            var display = r.Display ?? "";
+            return display.Contains("Microsoft.AspNetCore.Components", StringComparison.Ordinal) ||
+                   display.Contains("Microsoft.AspNetCore.Razor", StringComparison.Ordinal);
+        }))
+            return true;
+
+        // Fallback: check if the project directory actually contains .razor files.
+        // This mirrors how VS/VS Code detects Razor projects — by looking at the
+        // project SDK (Microsoft.NET.Sdk.Razor) or by scanning the file system.
+        var projectDir = Path.GetDirectoryName(project.FilePath);
+        if (projectDir != null && Directory.Exists(projectDir) &&
+            Directory.EnumerateFiles(projectDir, "*.razor", SearchOption.AllDirectories).Any())
+            return true;
+
+        return false;
     }
 
     /// <summary>
@@ -54,17 +70,38 @@ public partial class RoslynService
     {
         var key = NormalizeRazorPath(razorFilePath);
 
+        // Compute absolute path early — FindProjectForFile needs it
+        var absPath = _solution?.FilePath != null
+            ? Path.GetFullPath(Path.Combine(
+                Path.GetDirectoryName(_solution.FilePath)!, key))
+            : Path.GetFullPath(key);
+
         if (!_razorDocuments.TryGetValue(key, out var info))
-            return null;
+        {
+            // Not yet discovered — auto-discover on first access (VS/VS Code behavior)
+            // so that tools don't require prior loading of every .razor file
+            if (!File.Exists(absPath)) return null;
+
+            var project = FindProjectForFile(absPath)
+                // Fallback: if project has no FilePath (common in test/adhoc workspaces),
+                // try any available project — the virtual document just needs a Roslyn
+                // project to attach to.
+                ?? _solution?.Projects.FirstOrDefault();
+
+            if (project == null) return null;
+
+            // Register for future access and process immediately
+            _razorDocuments[key] = null!;
+            info = ProcessRazorFile(absPath, project);
+            return info;
+        }
 
         if (info == null)
         {
-            // Lazy first-access processing
-            var project = FindProjectForFile(key);
+            // Lazy first-access processing — discovered but not yet processed
+            var project = FindProjectForFile(absPath);
             if (project == null) return null;
 
-            var absPath = Path.GetFullPath(Path.Combine(
-                Path.GetDirectoryName(_solution!.FilePath)!, key));
             info = ProcessRazorFile(absPath, project);
         }
 

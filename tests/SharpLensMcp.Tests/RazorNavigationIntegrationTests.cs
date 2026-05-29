@@ -151,4 +151,85 @@ public class RazorNavigationIntegrationTests
         }
         finally { try { Directory.Delete(d, true); } catch { } }
     }
+
+    // ---- SyncDocuments preserves razor tracking ----
+    [Fact]
+    public async Task SyncDocuments_DoesNotDropRazorTracking()
+    {
+        var code = "@code {\n    private int _x;\n}";
+        var (d, razorPath) = Setup(code);
+        try
+        {
+            var svc = Svc(d);
+            // Verify razor file is accessible before sync
+            var docBefore = svc.TryFindDocument(razorPath);
+            Assert.NotNull(docBefore);
+
+            // Run sync (no explicit files — syncs all)
+            var syncResult = await svc.SyncDocumentsAsync(null);
+            var syncJ = JObject.FromObject(syncResult);
+            Assert.True((bool)syncJ["success"]!, $"Sync failed: {syncJ["error"]}");
+
+            // Verify razor file is STILL accessible after sync
+            var docAfter = svc.TryFindDocument(razorPath);
+            Assert.NotNull(docAfter);
+        }
+        finally { try { Directory.Delete(d, true); } catch { } }
+    }
+
+    // ---- GetTypeHierarchy on field position resolves to containing type ----
+    [Fact]
+    public async Task GetTypeHierarchy_OnFieldInCodeBlock_ResolvesToType()
+    {
+        var code = "@code {\n    private int _x;\n}";
+        var (d, _) = Setup(code);
+        try
+        {
+            // Position on the field declaration — should resolve upwards to the containing class
+            var r = await Svc(d).GetTypeHierarchyAsync(Path.Combine(d, "C.razor"), 1, 16);
+            var j = JObject.FromObject(r);
+            Assert.True((bool)j["success"]!, $"Err: {j["error"]}");
+            var firstName = (string)j["data"]!["baseTypes"]![0]!["name"]!;
+            Assert.Contains("ComponentBase", firstName);
+        }
+        finally { try { Directory.Delete(d, true); } catch { } }
+    }
+
+    // ---- Auto-discovery of .razor files on first access ----
+    [Fact]
+    public async Task GetSymbolInfo_UndiscoveredRazorFile_AutoDiscovers()
+    {
+        // Place the .razor file inside the project directory so FindProjectForFile can locate it.
+        // CreateWorkspaceWithCode puts documents under adhoc-{guid}/, so use that base dir.
+        var (ws, doc) = TestHelpers.CreateWorkspaceWithCode("class P { }");
+        var projectDir = Path.GetDirectoryName(doc.FilePath)!;
+        Directory.CreateDirectory(projectDir); // CreateWorkspaceWithCode only sets a virtual path
+        var razorPath = Path.Combine(projectDir, "Page.razor");
+        File.WriteAllText(razorPath, "@code {\n    private string _name;\n}");
+        try
+        {
+            var r = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".nuget", "packages", "microsoft.aspnetcore.components");
+            if (Directory.Exists(r))
+                foreach (var dir in Directory.GetDirectories(r).OrderByDescending(x => x))
+                {
+                    var a = Path.Combine(dir, "lib", "net8.0", "Microsoft.AspNetCore.Components.dll");
+                    if (File.Exists(a))
+                    {
+                        ws.TryApplyChanges(ws.CurrentSolution.AddMetadataReference(
+                            ws.CurrentSolution.ProjectIds.Single(), MetadataReference.CreateFromFile(a)));
+                        break;
+                    }
+                }
+            var svc = new RoslynService();
+            svc.LoadFromWorkspaceForTesting(ws);
+            // NO call to ProcessRazorFile — simulate first-touch discovery
+
+            var result = await svc.GetSymbolInfoAsync(razorPath, 1, 20);
+            var j = JObject.FromObject(result);
+            Assert.True((bool)j["success"]!, $"Err: {j["error"]}");
+            Assert.Equal("_name", (string)j["data"]!["name"]!);
+        }
+        finally { try { File.Delete(razorPath); } catch { } }
+    }
 }

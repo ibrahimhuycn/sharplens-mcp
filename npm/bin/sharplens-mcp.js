@@ -19,17 +19,32 @@ if (!hasDotnet()) {
   process.exit(1);
 }
 
-process.stderr.write(`Ensuring SharpLensMcp v${version} is installed...\n`);
-try {
-  execSync(
-    `dotnet tool update --global SharpLensMcp --version ${version}`,
-    { stdio: ["ignore", "ignore", "inherit"] }
-  );
-} catch {
+function isSharlensInstalled() {
+  try {
+    execSync("sharplens --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+if (isSharlensInstalled()) {
   process.stderr.write(
-    `Error: Failed to install/update SharpLensMcp v${version}.\n`
+    `SharpLensMcp already installed (v${version} or newer).\n`
   );
-  process.exit(1);
+} else {
+  process.stderr.write(`Installing SharpLensMcp v${version}...\n`);
+  try {
+    execSync(
+      `dotnet tool install --global SharpLensMcp --version ${version}`,
+      { stdio: ["ignore", "ignore", "inherit"] }
+    );
+  } catch {
+    process.stderr.write(
+      `Error: Failed to install SharpLensMcp v${version}.\n`
+    );
+    process.exit(1);
+  }
 }
 
 const args = process.argv.slice(2);

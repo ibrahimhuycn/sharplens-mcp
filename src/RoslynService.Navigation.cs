@@ -153,7 +153,60 @@ public partial class RoslynService
         foreach (var loc in allLocations)
         {
             var refDocument = _solution!.GetDocument(loc.Document.Id);
-            if (refDocument == null) continue;
+
+            // Fallback for source-generated documents (e.g. Razor .g.cs, source generators)
+            // that are part of the compilation but not tracked as workspace documents.
+            // VS/VS Code handles this by resolving through the compilation's syntax trees.
+            if (refDocument == null)
+            {
+                var sourceTree = loc.Location.SourceTree;
+                if (sourceTree != null)
+                {
+                    // Use GetLineSpan().Path which respects #line directives —
+                    // for Razor source-generated .g.cs files this maps back to the .razor path.
+                    // sourceTree.FilePath gives the physical .g.cs path — not what we want.
+                    var srcLineSpan = sourceTree.GetLineSpan(loc.Location.SourceSpan);
+                    var srcPath = srcLineSpan.Path;
+
+                    // Fallback: if #line didn't map, try heuristic reverse-mapping from
+                    // .g.cs → .razor (handles Razor Source Generator files in obj/Debug/...)
+                    if (srcPath == null || srcPath == sourceTree.FilePath)
+                    {
+                        var (mappedFp, _, _) = TranslateLocationSimple(loc.Location);
+                        srcPath = mappedFp;
+                    }
+
+                    if (!string.IsNullOrEmpty(srcPath))
+                    {
+                        var srcText = sourceTree.GetText();
+                        var srcLineText = srcText.Lines[srcLineSpan.StartLinePosition.Line].ToString().Trim();
+
+                        // Use TranslateLocationSimple which handles both SharpLensMcp
+                        // virtual docs and #line-directive-mapped source-generated docs
+                        var (genFp, genLine, genCol) = TranslateLocationSimple(loc.Location);
+                        var srcRoot = await sourceTree.GetRootAsync();
+                        var srcNode = srcRoot?.FindNode(loc.Location.SourceSpan);
+                        var genKind = ClassifyReferenceKind(loc, srcNode);
+
+                        if (filterKind != null && !string.Equals(genKind, filterKind, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        totalAfterFilter++;
+                        if (referenceList.Count < maxResultsToReturn)
+                        {
+                            referenceList.Add(new
+                            {
+                                filePath = genFp,
+                                line = genLine,
+                                column = genCol,
+                                lineText = srcLineText,
+                                kind = genKind
+                            });
+                        }
+                    }
+                }
+                continue;
+            }
 
             var refTree = await refDocument.GetSyntaxTreeAsync();
             if (refTree == null) continue;
@@ -490,6 +543,13 @@ public partial class RoslynService
                 context: new { filePath, line, column }
             );
         }
+
+        // When cursor lands on a member (field, method, property, etc.) or the generated
+        // constructor in .razor files, resolve upward to the containing type.
+        if (symbol is IMethodSymbol { MethodKind: MethodKind.Constructor } ctor)
+            symbol = ctor.ContainingType;
+        else if (symbol is not INamedTypeSymbol && symbol.ContainingType is INamedTypeSymbol ct)
+            symbol = ct;
 
         if (symbol is not INamedTypeSymbol typeSymbol)
         {

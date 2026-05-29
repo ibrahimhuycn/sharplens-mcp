@@ -99,7 +99,13 @@ public partial class RoslynService
         }
         else if (!string.IsNullOrEmpty(projectPath))
         {
-            var project = _solution!.Projects.FirstOrDefault(p => p.FilePath == projectPath);
+            var project = _solution!.Projects.FirstOrDefault(p =>
+                p.FilePath == projectPath ||
+                p.Name.Equals(projectPath, StringComparison.OrdinalIgnoreCase) ||
+                (p.FilePath != null && Path.GetFullPath(p.FilePath)
+                    .Equals(Path.GetFullPath(projectPath), PathComparison)) ||
+                (p.FilePath != null && Path.GetFullPath(p.FilePath)
+                    .EndsWith(projectPath.Replace('\\', '/'), PathComparison)));
             if (project != null)
             {
                 var compilation = await GetProjectCompilationAsync(project);

@@ -224,4 +224,54 @@ public partial class RoslynService
         }
         return (line, col);
     }
+
+    private static int GetLineCount(string text)
+    {
+        var count = 1;
+        foreach (var c in text)
+            if (c == '\n') count++;
+        return count;
+    }
+
+    /// <summary>
+    /// Translate a .razor line range to the equivalent line range in the generated
+    /// C# virtual document. This enables tools like analyze_data_flow and
+    /// analyze_control_flow to work on .razor files by first mapping the range
+    /// to C# coordinates, running the analysis there, then reporting results
+    /// (which TranslateLocation maps back to .razor positions automatically).
+    /// </summary>
+    internal (Document Document, int StartLine, int EndLine)? MapRazorLineRangeToCSharp(
+        string razorFilePath, int razorStartLine, int razorEndLine)
+    {
+        var info = GetRazorFileInfo(razorFilePath);
+        if (info == null) return null;
+
+        var razorText = info.RazorSourceText;
+        var razorLineCount = GetLineCount(razorText);
+
+        // Convert .razor lines to character offsets
+        var razorStartOffset = Math.Min(GetOffset(razorText, razorStartLine, 0), razorText.Length);
+        var razorEndOffset = razorEndLine >= razorLineCount - 1
+            ? razorText.Length
+            : Math.Min(GetOffset(razorText, razorEndLine + 1, 0), razorText.Length);
+
+        // Find source mappings that overlap with the requested range
+        var relevantMappings = info.CSharpDocument.SourceMappings
+            .Where(m => m.OriginalSpan.AbsoluteIndex < razorEndOffset
+                     && m.OriginalSpan.AbsoluteIndex + m.OriginalSpan.Length > razorStartOffset)
+            .ToList();
+
+        if (relevantMappings.Count == 0) return null;
+
+        var genStartOffset = relevantMappings.First().GeneratedSpan.AbsoluteIndex;
+        var lastMapping = relevantMappings.Last();
+        var genEndOffset = lastMapping.GeneratedSpan.AbsoluteIndex + lastMapping.GeneratedSpan.Length;
+
+        var (genStartLine, _) = GetLineColumn(info.GeneratedSourceText, genStartOffset);
+        var (genEndLine, _) = GetLineColumn(info.GeneratedSourceText,
+            Math.Min(genEndOffset, info.GeneratedSourceText.Length - 1));
+
+        var doc = _solution!.GetDocument(info.VirtualDocumentId);
+        return doc != null ? (doc, genStartLine, genEndLine) : null;
+    }
 }

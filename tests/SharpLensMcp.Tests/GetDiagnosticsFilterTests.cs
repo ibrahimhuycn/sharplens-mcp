@@ -308,4 +308,22 @@ public class B
         diagsB.Any(d => d["message"]?.Value<string>()?.Contains("unusedA") == true)
             .Should().BeFalse("A's 'unusedA' warning must not appear in B's results");
     }
+
+    [Fact]
+    public async Task GetDiagnostics_ByProjectName_MatchesCaseInsensitively()
+    {
+        var (ws, _) = TestHelpers.CreateWorkspaceWithCode("public class C { int unused; }");
+        var service = new RoslynService();
+        service.LoadFromWorkspaceForTesting(ws);
+        var project = ws.CurrentSolution.Projects.Single();
+
+        // Match by project name (case-insensitive)
+        var result = await service.GetDiagnosticsAsync(
+            filePath: null,
+            projectPath: project.Name.ToUpperInvariant(),
+            severity: null, includeHidden: false, runAnalyzers: false);
+        var j = JObject.FromObject(result);
+        Assert.True((bool)j["success"]!, $"Match by name failed: {j["error"]}");
+        Assert.NotNull(j["data"]);
+    }
 }
