@@ -10,6 +10,7 @@ namespace SharpLensMcp.Tests;
 /// </summary>
 public class CustomToolTests : RoslynServiceTestBase
 {
+    public CustomToolTests(SolutionFixture fixture) : base(fixture) { }
     #region Complexity Metrics Tests
 
     [Fact]

@@ -11,6 +11,7 @@ namespace SharpLensMcp.Tests;
 /// </summary>
 public class DiscoveryToolTests : RoslynServiceTestBase
 {
+    public DiscoveryToolTests(SolutionFixture fixture) : base(fixture) { }
     #region find_attribute_usages
 
     [Fact]

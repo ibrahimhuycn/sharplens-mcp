@@ -9,6 +9,7 @@ namespace SharpLensMcp.Tests;
 /// </summary>
 public class InfrastructureTests : RoslynServiceTestBase
 {
+    public InfrastructureTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task GetHealthCheck_ReturnsSolutionInfoWithProjectCountAndDiagnosticTotals()
     {

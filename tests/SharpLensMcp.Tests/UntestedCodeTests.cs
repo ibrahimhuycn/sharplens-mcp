@@ -12,6 +12,7 @@ namespace SharpLensMcp.Tests;
 // the production-surface list.
 public class UntestedCodeTests : RoslynServiceTestBase
 {
+    public UntestedCodeTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task FindUntestedCode_ReportsNeverCalledAndProductionOnlyChains_ExcludesReachableAndTestMethods()
     {

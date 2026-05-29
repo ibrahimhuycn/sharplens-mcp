@@ -8,6 +8,7 @@ namespace SharpLensMcp.Tests;
 // god-class (25 type deps + 25 members) and one focused class (2 type deps + 3 members).
 public class GodObjectTests : RoslynServiceTestBase
 {
+    public GodObjectTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task FindGodObjects_FlagsEngineeredGodClass_NotSmallFocused()
     {

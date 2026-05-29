@@ -9,6 +9,7 @@ namespace SharpLensMcp.Tests;
 // SymbolFinder.FindCallersAsync path for the callers direction.
 public class CallGraphTests : RoslynServiceTestBase
 {
+    public CallGraphTests(SolutionFixture fixture) : base(fixture) { }
     private async Task<(string filePath, int line, int column)> LocateAsync(string methodName)
     {
         var searchResult = await Service.SearchSymbolsAsync(methodName, kind: "Method", maxResults: 20);

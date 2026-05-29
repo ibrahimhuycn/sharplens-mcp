@@ -16,20 +16,9 @@ public partial class RoslynService
     {
         EnsureSolutionLoaded();
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -52,8 +41,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)
@@ -99,7 +87,12 @@ public partial class RoslynService
         var overloadList = overloads.Select(m =>
         {
             var location = m.Locations.FirstOrDefault(loc => loc.IsInSource);
-            var lineSpan = location?.GetLineSpan();
+            object? locObj = null;
+            if (location != null)
+            {
+                var (fp, l, c) = TranslateLocationSimple(location);
+                locObj = new { filePath = fp, line = l, column = c };
+            }
 
             return new
             {
@@ -114,12 +107,7 @@ public partial class RoslynService
                 returnType = m.ReturnType.ToDisplayString(),
                 isAsync = m.IsAsync,
                 isStatic = m.IsStatic,
-                location = lineSpan != null ? new
-                {
-                    filePath = FormatPath(lineSpan.Value.Path),
-                    line = lineSpan.Value.StartLinePosition.Line,
-                    column = lineSpan.Value.StartLinePosition.Character
-                } : null
+                location = locObj
             };
         }).ToList();
 
@@ -144,20 +132,9 @@ public partial class RoslynService
     {
         EnsureSolutionLoaded();
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var syntaxTree = await document.GetSyntaxTreeAsync();
         if (syntaxTree == null)
@@ -169,8 +146,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
 
         // Walk up the syntax tree to find the containing member
         var memberNode = token.Parent?.AncestorsAndSelf().FirstOrDefault(n =>
@@ -244,20 +220,9 @@ public partial class RoslynService
 
         var maxResultsToReturn = maxResults ?? 100; // Default to 100
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -280,8 +245,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)
@@ -340,12 +304,10 @@ public partial class RoslynService
 
                 if (location.SourceTree == null) continue;
 
-                var callerDocument = _solution!.GetDocument(location.SourceTree);
-                if (callerDocument == null) continue;
-
                 var lineSpan = location.GetLineSpan();
                 var text = location.SourceTree.GetText();
                 var lineText = text.Lines[lineSpan.StartLinePosition.Line].ToString().Trim();
+                var (fp, l, c) = TranslateLocationSimple(location);
 
                 callerList.Add(new
                 {
@@ -358,9 +320,9 @@ public partial class RoslynService
                     },
                     location = new
                     {
-                        filePath = FormatPath(callerDocument.FilePath),
-                        line = lineSpan.StartLinePosition.Line,
-                        column = lineSpan.StartLinePosition.Character,
+                        filePath = fp,
+                        line = l,
+                        column = c,
                         lineText
                     }
                 });
@@ -811,20 +773,9 @@ public partial class RoslynService
 
         var depth = maxDepth ?? 1;
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -847,8 +798,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         // Find the method declaration
@@ -889,7 +839,12 @@ public partial class RoslynService
             visited.Add(key);
 
             var location = calledMethod.Locations.FirstOrDefault(l => l.IsInSource);
-            var lineSpan = location?.GetLineSpan();
+            object? locObj = null;
+            if (location != null)
+            {
+                var (fp, l, c) = TranslateLocationSimple(location);
+                locObj = new { filePath = fp, line = l, column = c };
+            }
 
             calls.Add(new
             {
@@ -898,12 +853,7 @@ public partial class RoslynService
                 returnType = calledMethod.ReturnType.ToDisplayString(),
                 isAsync = calledMethod.IsAsync,
                 isExternal = !location?.IsInSource ?? true,
-                location = lineSpan != null ? new
-                {
-                    filePath = FormatPath(lineSpan.Value.Path),
-                    line = lineSpan.Value.StartLinePosition.Line,
-                    column = lineSpan.Value.StartLinePosition.Character
-                } : null
+                location = locObj
             });
         }
 
@@ -919,7 +869,12 @@ public partial class RoslynService
                 visited.Add(key);
 
                 var location = prop.Locations.FirstOrDefault(l => l.IsInSource);
-                var lineSpan = location?.GetLineSpan();
+                object? locObj = null;
+                if (location != null)
+                {
+                    var (fp, l, c) = TranslateLocationSimple(location);
+                    locObj = new { filePath = fp, line = l, column = c };
+                }
 
                 calls.Add(new
                 {
@@ -929,12 +884,7 @@ public partial class RoslynService
                     isAsync = false,
                     isProperty = true,
                     isExternal = !location?.IsInSource ?? true,
-                    location = lineSpan != null ? new
-                    {
-                        filePath = FormatPath(lineSpan.Value.Path),
-                        line = lineSpan.Value.StartLinePosition.Line,
-                        column = lineSpan.Value.StartLinePosition.Character
-                    } : null
+                    location = locObj
                 });
             }
         }

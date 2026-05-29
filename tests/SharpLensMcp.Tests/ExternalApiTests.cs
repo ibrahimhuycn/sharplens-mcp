@@ -8,6 +8,7 @@ namespace SharpLensMcp.Tests;
 // External-assembly resolution is what closes the AI-hallucination gap for NuGet/BCL APIs.
 public class ExternalApiTests : RoslynServiceTestBase
 {
+    public ExternalApiTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task GetExternalTypeInfo_OnSystemString_ReturnsFullTypeShapeAndMemberShape()
     {

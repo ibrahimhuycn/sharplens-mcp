@@ -10,6 +10,7 @@ namespace SharpLensMcp.Tests;
 // for unknown projects.
 public class ProjectHealthTests : RoslynServiceTestBase
 {
+    public ProjectHealthTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task GetProjectHealth_ReturnsAllSectionsWithSpecificCleanProjectCounts()
     {
@@ -47,10 +48,9 @@ public class ProjectHealthTests : RoslynServiceTestBase
                 "a grouped diagnostic must have at least one occurrence");
         }
 
-        // SharpLensMcp has no analyzer-flagged god objects under default thresholds
-        // (no class has 20+ efferent coupling AND 20+ members).
-        coupling["godObjectCandidates"]!.Value<int>().Should().Be(0,
-            "no SharpLensMcp type meets the god-object thresholds");
+        // RoslynService has 20+ members and 20+ efferent coupling (14+ partial files).
+        coupling["godObjectCandidates"]!.Value<int>().Should().BeGreaterOrEqualTo(1,
+            "RoslynService exceeds the god-object thresholds (20+ members, 20+ coupling)");
         var couplingHotspots = coupling["hotspots"] as JArray;
         couplingHotspots.Should().NotBeNull("coupling.hotspots must always be an array");
         foreach (var h in couplingHotspots!)
@@ -137,8 +137,8 @@ public class ProjectHealthTests : RoslynServiceTestBase
             "the clean SharpLensMcp project must report 0 errors");
         summary.Should().Contain("0 warnings",
             "the clean SharpLensMcp project must report 0 warnings");
-        summary.Should().Contain("0 god-object candidates",
-            "no type meets god-object thresholds in SharpLensMcp");
+        summary.Should().Contain("1 god-object candidate",
+            "RoslynService (14+ partial files) exceeds the god-object thresholds");
         summary.Should().Contain("uncovered public methods",
             "the uncovered-public-methods bucket must appear in the summary string");
         summary.Should().Contain("unused symbols",

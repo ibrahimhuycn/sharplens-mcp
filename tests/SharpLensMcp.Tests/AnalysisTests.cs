@@ -15,6 +15,7 @@ namespace SharpLensMcp.Tests;
 // previous solution-loaded variants here were tautologies on a clean codebase.
 public class AnalysisTests : RoslynServiceTestBase
 {
+    public AnalysisTests(SolutionFixture fixture) : base(fixture) { }
     private static (string file, int firstStmt, int lastStmt) LocateSumBody(RoslynService service)
     {
         // Resolve the fixture path off the loaded solution, then read the file to find

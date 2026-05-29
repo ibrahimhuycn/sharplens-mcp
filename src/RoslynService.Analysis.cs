@@ -189,13 +189,13 @@ public partial class RoslynService
 
         var entries = capped.Select(d =>
         {
-            var lineSpan = d.Location.GetLineSpan();
+            var (path, line, col, _, _) = TranslateLocation(d.Location);
             return new DiagnosticEntry(
                 d.Id,
                 d.Severity.ToString(),
                 d.GetMessage(),
-                FormatPath(lineSpan.Path),
-                lineSpan.StartLinePosition.Line);
+                path,
+                line);
         }).ToList();
 
         var errorCount = entries.Count(e => e.Severity == "Error");

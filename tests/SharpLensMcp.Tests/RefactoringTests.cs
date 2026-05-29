@@ -11,6 +11,7 @@ namespace SharpLensMcp.Tests;
 // silently skip the assertion when the field is missing.
 public class RefactoringTests : RoslynServiceTestBase
 {
+    public RefactoringTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task RenameSymbol_WithPreview_ShowsChanges()
     {

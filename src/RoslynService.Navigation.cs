@@ -12,20 +12,9 @@ public partial class RoslynService
     {
         EnsureSolutionLoaded();
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -48,8 +37,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)
@@ -88,7 +76,7 @@ public partial class RoslynService
             suggestedNextTools: new[]
             {
                 $"find_references to see all usages of {symbol.Name}",
-                symbol is Microsoft.CodeAnalysis.INamedTypeSymbol ? $"get_type_members for {symbol.Name} to see members" : null,
+                symbol is INamedTypeSymbol ? $"get_type_members for {symbol.Name} to see members" : null,
                 $"go_to_definition to navigate to {symbol.Name}'s definition"
             }.Where(s => s != null).ToArray()!
         );
@@ -101,20 +89,9 @@ public partial class RoslynService
         var maxResultsToReturn = maxResults ?? 100;
         var filterKind = string.IsNullOrWhiteSpace(kindFilter) ? null : kindFilter!.ToLowerInvariant();
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -137,8 +114,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)
@@ -199,11 +175,12 @@ public partial class RoslynService
             if (referenceList.Count >= maxResultsToReturn)
                 continue;
 
+            var (fp, l, c) = TranslateLocationSimple(loc.Location);
             referenceList.Add(new
             {
-                filePath = FormatPath(refDocument.FilePath),
-                line = lineSpan.StartLinePosition.Line,
-                column = lineSpan.StartLinePosition.Character,
+                filePath = fp,
+                line = l,
+                column = c,
                 lineText,
                 kind
             });
@@ -246,20 +223,9 @@ public partial class RoslynService
     {
         EnsureSolutionLoaded();
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -282,8 +248,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)
@@ -321,7 +286,7 @@ public partial class RoslynService
             );
         }
 
-        var defLineSpan = definitionLocation.GetLineSpan();
+        var (fp, l, c, el, ec) = TranslateLocation(definitionLocation);
 
         return CreateSuccessResponse(
             data: new
@@ -336,11 +301,11 @@ public partial class RoslynService
                 },
                 definition = new
                 {
-                    filePath = FormatPath(defLineSpan.Path),
-                    line = defLineSpan.StartLinePosition.Line,
-                    column = defLineSpan.StartLinePosition.Character,
-                    endLine = defLineSpan.EndLinePosition.Line,
-                    endColumn = defLineSpan.EndLinePosition.Character
+                    filePath = fp,
+                    line = l,
+                    column = c,
+                    endLine = el,
+                    endColumn = ec
                 }
             },
             suggestedNextTools: new[]
@@ -358,20 +323,9 @@ public partial class RoslynService
 
         var maxResultsToReturn = maxResults ?? 50;
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -394,8 +348,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)
@@ -445,12 +398,12 @@ public partial class RoslynService
                 .Where(loc => loc.IsInSource)
                 .Select(loc =>
                 {
-                    var lineSpan = loc.GetLineSpan();
+                    var (fp, l, c) = TranslateLocationSimple(loc);
                     return new
                     {
-                        filePath = FormatPath(lineSpan.Path),
-                        line = lineSpan.StartLinePosition.Line,
-                        column = lineSpan.StartLinePosition.Character
+                        filePath = fp,
+                        line = l,
+                        column = c
                     };
                 })
                 .ToList();
@@ -487,20 +440,9 @@ public partial class RoslynService
 
         var maxDerivedToReturn = maxDerivedTypes ?? 50; // Default to 50
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -523,8 +465,7 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-        var token = syntaxTree.GetRoot().FindToken(position);
+        var token = syntaxTree.GetRoot().FindToken(rc.Offset);
         var node = token.Parent;
 
         if (node == null)

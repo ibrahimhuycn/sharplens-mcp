@@ -9,6 +9,7 @@ namespace SharpLensMcp.Tests;
 // uses TrackedField + TrackedTarget in every classifier branch.
 public class FindReferencesKindTests : RoslynServiceTestBase
 {
+    public FindReferencesKindTests(SolutionFixture fixture) : base(fixture) { }
     private async Task<(string filePath, int line, int column)> LocateAsync(string symbolName, string kind)
     {
         var searchResult = await Service.SearchSymbolsAsync(symbolName, kind: kind, maxResults: 20);

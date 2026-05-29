@@ -15,6 +15,7 @@ namespace SharpLensMcp.Tests;
 /// </summary>
 public class SourceGeneratorTests : RoslynServiceTestBase
 {
+    public SourceGeneratorTests(SolutionFixture fixture) : base(fixture) { }
     private const string TestProjectName = "SharpLensMcp.Tests";
     private const string MainProjectName = "SharpLensMcp";
     private const string ConsumerFileName = "SourceGeneratorFixture.cs";

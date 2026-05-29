@@ -9,6 +9,7 @@ namespace SharpLensMcp.Tests;
 /// </summary>
 public class NavigationTests : RoslynServiceTestBase
 {
+    public NavigationTests(SolutionFixture fixture) : base(fixture) { }
     [Fact]
     public async Task GetSymbolInfo_OnClassName_ReturnsTypeInfo()
     {

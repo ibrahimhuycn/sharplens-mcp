@@ -11,6 +11,7 @@ namespace SharpLensMcp.Tests;
 /// </summary>
 public class CodeActionTests : RoslynServiceTestBase
 {
+    public CodeActionTests(SolutionFixture fixture) : base(fixture) { }
     private async Task<(string file, int startLine, int endLine)> LocateSumExtractableSelectionAsync()
     {
         // RefactoringTarget.Sum body has two `var` statements ("var partial = a + b;"

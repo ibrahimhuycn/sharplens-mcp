@@ -53,10 +53,6 @@ public partial class RoslynService
                 var existingTree = await document.GetSyntaxTreeAsync();
                 var existingRoot = await existingTree!.GetRootAsync() as CompilationUnitSyntax;
 
-                // Parse the new code
-                var newCode = CSharpSyntaxTree.ParseText(code);
-                var newRoot = await newCode.GetRootAsync();
-
                 // Get usings from context
                 var usings = existingRoot?.Usings.ToFullString() ?? "";
                 var ns = existingRoot?.Members.OfType<BaseNamespaceDeclarationSyntax>().FirstOrDefault();
@@ -72,8 +68,9 @@ namespace {(string.IsNullOrEmpty(nsName) ? "ValidationNamespace" : nsName)} {{
         }}
     }}
 }}";
-                syntaxTree = CSharpSyntaxTree.ParseText(wrappedCode);
                 var project = document.Project;
+                var parseOptions = (CSharpParseOptions)project.ParseOptions!;
+                syntaxTree = CSharpSyntaxTree.ParseText(wrappedCode, parseOptions);
                 compilation = (await GetProjectCompilationAsync(project))!
                     .AddSyntaxTrees(syntaxTree);
             }

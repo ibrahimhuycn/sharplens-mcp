@@ -27,6 +27,7 @@ public partial class RoslynService
     private readonly int _maxDiagnostics;
     private readonly int _timeoutSeconds;
     private readonly bool _useAbsolutePaths;
+    private readonly bool _enableCache;
 
     private DateTime? _solutionLoadedAt;
 
@@ -37,6 +38,7 @@ public partial class RoslynService
         _timeoutSeconds = int.TryParse(Environment.GetEnvironmentVariable("ROSLYN_TIMEOUT_SECONDS"), out var timeout)
             ? timeout : 30;
         _useAbsolutePaths = Environment.GetEnvironmentVariable("SHARPLENS_ABSOLUTE_PATHS")?.ToLower() == "true";
+        _enableCache = Environment.GetEnvironmentVariable("ROSLYN_ENABLE_SEMANTIC_CACHE") != "false";
     }
 
     // Helper method for glob pattern matching (supports * and ? wildcards).
@@ -242,13 +244,8 @@ public partial class RoslynService
         var location = symbol.Locations.FirstOrDefault(loc => loc.IsInSource);
         if (location == null) return null;
 
-        var lineSpan = location.GetLineSpan();
-        return new
-        {
-            filePath = FormatPath(lineSpan.Path),
-            line = lineSpan.StartLinePosition.Line,
-            column = lineSpan.StartLinePosition.Character
-        };
+        var (path, line, col, _, _) = TranslateLocation(location);
+        return new { filePath = path, line, column = col };
     }
 
 
@@ -265,9 +262,11 @@ public partial class RoslynService
         }
 
         // Dispose existing workspace
+        StopFileWatcher();
         _workspace?.Dispose();
         _documentCache.Clear();
         _compilationCache.Clear();
+        ClearRazorState();
 
         // MSBuild-specific construction lives in a local variable; once configured
         // we hand it to the base-typed _workspace field. The workspace's HostServices
@@ -286,6 +285,11 @@ public partial class RoslynService
         _solution = await msbuild.OpenSolutionAsync(solutionPath);
         _workspace = msbuild;
         _solutionLoadedAt = DateTime.UtcNow;
+
+        StartFileWatcher();
+
+        // Discover .razor files in Blazor projects (processed lazily on first access)
+        DiscoverRazorFiles();
 
         var projectCount = _solution.ProjectIds.Count;
         var documentCount = _solution.Projects.Sum(p => p.DocumentIds.Count);
@@ -362,6 +366,39 @@ public partial class RoslynService
             try
             {
                 var fileExists = File.Exists(fullPath);
+
+                // Handle .razor files - re-process via RazorProjectEngine
+                if (fullPath.EndsWith(".razor", StringComparison.OrdinalIgnoreCase))
+                {
+                    var razorKey = NormalizeRazorPath(fullPath);
+                    var isRegistered = _razorDocuments.ContainsKey(razorKey);
+
+                    if (fileExists)
+                    {
+                        var project = FindProjectForFile(fullPath);
+                        if (project == null)
+                        {
+                            errors.Add(new { path = FormatPath(fullPath), error = "Could not determine project for .razor file" });
+                            continue;
+                        }
+
+                        if (isRegistered)
+                        {
+                            // Re-process existing razor file and update virtual doc
+                            RemoveVirtualRazorDocument(razorKey);
+                        }
+                        ProcessRazorFile(fullPath, project);
+                        updated.Add(FormatPath(fullPath));
+                    }
+                    else if (isRegistered)
+                    {
+                        // Razor file deleted - remove virtual doc
+                        RemoveVirtualRazorDocument(razorKey);
+                        removed.Add(FormatPath(fullPath));
+                    }
+                    continue;
+                }
+
                 var docExists = documentsByPath.TryGetValue(fullPath, out var existingDoc);
 
                 if (fileExists && docExists)
@@ -699,6 +736,7 @@ public partial class RoslynService
     /// </summary>
     internal void LoadFromWorkspaceForTesting(Workspace workspace)
     {
+        StopFileWatcher();
         _workspace?.Dispose();
         _documentCache.Clear();
         _compilationCache.Clear();
@@ -776,6 +814,23 @@ public partial class RoslynService
         if (_documentCache.TryGetValue(filePath, out var cached))
             return cached;
 
+        // .razor routing: map .razor file path → virtual generated C# document
+        if (filePath.EndsWith(".razor", StringComparison.OrdinalIgnoreCase))
+        {
+            var razorInfo = GetRazorFileInfo(filePath);
+            if (razorInfo != null)
+            {
+                var virtualDoc = _solution!.GetDocument(razorInfo.VirtualDocumentId);
+                if (virtualDoc != null)
+                {
+                    if (_enableCache)
+                        _documentCache[filePath] = virtualDoc;
+                    return virtualDoc;
+                }
+            }
+            return null;
+        }
+
         var resolved = filePath;
         if (!Path.IsPathRooted(filePath) && _solution?.FilePath != null)
         {
@@ -793,8 +848,7 @@ public partial class RoslynService
 
         if (document == null) return null;
 
-        var enableCache = Environment.GetEnvironmentVariable("ROSLYN_ENABLE_SEMANTIC_CACHE") != "false";
-        if (enableCache)
+        if (_enableCache)
         {
             _documentCache[filePath] = document;
         }
@@ -921,7 +975,6 @@ public partial class RoslynService
     private Task<object> FormatSymbolInfoAsync(ISymbol symbol)
     {
         var location = symbol.Locations.FirstOrDefault(loc => loc.IsInSource);
-        var lineSpan = location?.GetLineSpan();
 
         var result = new Dictionary<string, object?>
         {
@@ -938,14 +991,10 @@ public partial class RoslynService
             ["documentation"] = symbol.GetDocumentationCommentXml(),
         };
 
-        if (lineSpan.HasValue)
+        if (location != null)
         {
-            result["location"] = new
-            {
-                filePath = FormatPath(lineSpan.Value.Path),
-                line = lineSpan.Value.StartLinePosition.Line,
-                column = lineSpan.Value.StartLinePosition.Character
-            };
+            var (path, line, col, _, _) = TranslateLocation(location);
+            result["location"] = new { filePath = path, line, column = col };
         }
 
         // Type-specific properties
