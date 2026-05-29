@@ -232,4 +232,49 @@ public class RazorNavigationIntegrationTests
         }
         finally { try { File.Delete(razorPath); } catch { } }
     }
+
+    // ---- Rename preview + apply on .razor ----
+
+    [Fact]
+    public async Task RenameSymbol_OnRazorField_PreviewShowsChanges()
+    {
+        var code = "@code {\n    private int _cnt;\n    void Inc() { _cnt++; }\n}";
+        var (d, _) = Setup(code);
+        try
+        {
+            var r = await Svc(d).RenameSymbolAsync(
+                Path.Combine(d, "C.razor"), 1, 16, "_count", preview: true);
+            var j = JObject.FromObject(r);
+            Assert.True((bool)j["success"]!, $"Err: {j["error"]}");
+            Assert.True((bool)j["data"]!["preview"]!);
+            Assert.False((bool)j["data"]!["applied"]!);
+            Assert.True((int)j["meta"]!["ReturnedCount"]! > 0);
+        }
+        finally { try { Directory.Delete(d, true); } catch { } }
+    }
+
+    [Fact]
+    public async Task RenameSymbol_OnRazorField_ApplyWritesToDisk()
+    {
+        var code = "@code {\n    private int _cnt;\n    void Inc() { _cnt++; }\n}";
+        var (d, razorPath) = Setup(code);
+        try
+        {
+            var svc = Svc(d);
+            var originalText = File.ReadAllText(razorPath);
+
+            var r = await svc.RenameSymbolAsync(
+                razorPath, 1, 16, "_count", preview: false);
+            var j = JObject.FromObject(r);
+            Assert.True((bool)j["success"]!, $"Err: {j["error"]}");
+            Assert.True((bool)j["data"]!["applied"]!);
+
+            var newText = File.ReadAllText(razorPath);
+            Assert.Contains("_count", newText);
+            Assert.DoesNotContain("_cnt", newText);
+
+            File.WriteAllText(razorPath, originalText);
+        }
+        finally { try { Directory.Delete(d, true); } catch { } }
+    }
 }

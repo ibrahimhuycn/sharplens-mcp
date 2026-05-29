@@ -203,13 +203,13 @@ public partial class RoslynService
     /// Check if a document is a razor-generated virtual document.
     /// </summary>
     internal bool IsRazorGeneratedDocument(Document document) =>
-        _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId == document.Id);
+        _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId.Equals(document.Id));
 
     /// <summary>
     /// Check if a DocumentId belongs to a razor-generated virtual document.
     /// </summary>
     internal bool IsRazorGeneratedDocument(DocumentId docId) =>
-        _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId == docId);
+        _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId.Equals(docId));
 
     /// <summary>
     /// Normalize a razor file path: convert to solution-relative with forward slashes.

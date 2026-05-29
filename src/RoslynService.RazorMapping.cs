@@ -46,8 +46,10 @@ public partial class RoslynService
         var mapped = MapRazorPositionToOffset(filePath, line, column);
         if (mapped == null)
             return CreateErrorResponse(ErrorCodes.InvalidParameter,
-                $"Position (line {line}, col {column}) is in Razor markup, not C# code. " +
-                "Use a position inside an @code { } block or inline C# expression (@expr).",
+                $"Position (line {line}, col {column}) has no C# equivalent. " +
+                "Try a position inside an @code { } block, inline C# expression (@expr), " +
+                "or an event handler value (OnClick=\"Handler\"). " +
+                "For component tag names, use get_symbol_info with the type name instead.",
                 context: new { filePath, line, column });
 
         return new RazorContext(mapped.Value.Doc, mapped.Value.Offset, true, filePath);
@@ -55,7 +57,10 @@ public partial class RoslynService
 
     /// <summary>
     /// Map a line/column in .razor to a character offset in the generated C# document.
-    /// Returns null if the position is in pure markup.
+    /// If the exact position falls in markup, searches nearby for the nearest C#-mapped
+    /// position (e.g., the method name inside <c>OnClick="SaveDraft"</c>). This makes
+    /// position-based tools tolerant to approximate agent-provided cursor positions.
+    /// Returns null only if no mapping exists within the search window.
     /// </summary>
     internal (Microsoft.CodeAnalysis.Document Doc, int Offset)? MapRazorPositionToOffset(
         string razorFilePath, int razorLine, int razorColumn)
@@ -67,14 +72,47 @@ public partial class RoslynService
         if (razorOffset < 0 || razorOffset >= info.RazorSourceText.Length)
             return null;
 
+        // Exact match
         var mapping = info.CSharpDocument.SourceMappings.FirstOrDefault(m =>
             razorOffset >= m.OriginalSpan.AbsoluteIndex
             && razorOffset < m.OriginalSpan.AbsoluteIndex + m.OriginalSpan.Length);
 
+        // Lenient fallback: search ±256 chars for nearest SourceMapping.
+        // Measures distance to the NEAREST EDGE of each mapping span, not
+        // just the start — avoids preferring large-span mappings whose start
+        // is far away even when the target is inside them.
+        if (mapping == null)
+        {
+            const int window = 256;
+            var start = Math.Max(0, razorOffset - window);
+            var end = Math.Min(info.RazorSourceText.Length, razorOffset + window);
+            SourceMapping? best = null;
+            int bestDist = int.MaxValue;
+            foreach (var m in info.CSharpDocument.SourceMappings)
+            {
+                var mStart = m.OriginalSpan.AbsoluteIndex;
+                var mEnd = mStart + m.OriginalSpan.Length;
+                if (mEnd < start || mStart > end) continue; // outside window
+
+                // Distance to nearest edge of the mapping
+                int dist = razorOffset < mStart ? mStart - razorOffset
+                         : razorOffset > mEnd ? razorOffset - mEnd
+                         : 0;
+
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = m;
+                    if (dist == 0) break; // inside a mapping — optimal match
+                }
+            }
+            mapping = best;
+        }
+
         if (mapping == null) return null;
 
         var fraction = (double)(razorOffset - mapping.OriginalSpan.AbsoluteIndex)
-                     / mapping.OriginalSpan.Length;
+                     / Math.Max(1, mapping.OriginalSpan.Length);
         var generatedOffset = mapping.GeneratedSpan.AbsoluteIndex
                             + (int)(fraction * mapping.GeneratedSpan.Length);
 
@@ -123,7 +161,7 @@ public partial class RoslynService
         Document generatedDoc, int csharpLine, int csharpColumn)
     {
         var info = _razorDocuments.Values.FirstOrDefault(r =>
-            r != null && r.VirtualDocumentId == generatedDoc.Id);
+            r != null && r.VirtualDocumentId.Equals(generatedDoc.Id));
         if (info == null) return null;
 
         var generatedOffset = GetOffset(info.GeneratedSourceText, csharpLine, csharpColumn);
@@ -156,37 +194,85 @@ public partial class RoslynService
         if (location.SourceTree == null)
             return ("", 0, 0, 0, 0);
 
-        var doc = _solution!.GetDocument(location.SourceTree);
-        if (doc == null)
-        {
-            var span = location.GetLineSpan();
-            return (FormatPath(span.Path),
-                    span.StartLinePosition.Line,
-                    span.StartLinePosition.Character,
-                    span.EndLinePosition.Line,
-                    span.EndLinePosition.Character);
-        }
-
-        var razorMapping = MapCSharpPositionToRazor(
-            doc,
-            location.GetLineSpan().StartLinePosition.Line,
-            location.GetLineSpan().StartLinePosition.Character);
-
-        if (razorMapping != null)
-        {
-            return (FormatPath(razorMapping.Value.FilePath),
-                    razorMapping.Value.Line,
-                    razorMapping.Value.Column,
-                    razorMapping.Value.Line,
-                    razorMapping.Value.Column);
-        }
-
         var lineSpan = location.GetLineSpan();
-        return (FormatPath(lineSpan.Path),
+
+        // Path already mapped by #line directive — return as-is
+        var path = lineSpan.Path ?? "";
+
+        var doc = _solution!.GetDocument(location.SourceTree);
+        if (doc != null)
+        {
+            var razorMapping = MapCSharpPositionToRazor(
+                doc,
+                lineSpan.StartLinePosition.Line,
+                lineSpan.StartLinePosition.Character);
+
+            if (razorMapping != null)
+            {
+                return (FormatPath(razorMapping.Value.FilePath),
+                        razorMapping.Value.Line,
+                        razorMapping.Value.Column,
+                        razorMapping.Value.Line,
+                        razorMapping.Value.Column);
+            }
+        }
+
+        // #line directives didn't produce a .razor path — try heuristic for
+        // Razor Source Generator output (e.g., Components_Pages_Foo_razor.g.cs)
+        if (!string.IsNullOrEmpty(path) && path.Contains("RazorSourceGenerator", StringComparison.Ordinal))
+        {
+            var derived = TryDeriveRazorPathFromGenerated(path);
+            if (derived != null)
+            {
+                return (FormatPath(derived),
+                        lineSpan.StartLinePosition.Line,
+                        lineSpan.StartLinePosition.Character,
+                        lineSpan.EndLinePosition.Line,
+                        lineSpan.EndLinePosition.Character);
+            }
+        }
+
+        return (FormatPath(path),
                 lineSpan.StartLinePosition.Line,
                 lineSpan.StartLinePosition.Character,
                 lineSpan.EndLinePosition.Line,
                 lineSpan.EndLinePosition.Character);
+    }
+
+    /// <summary>
+    /// Derive the original .razor file path from a Razor Source Generator .g.cs path.
+    /// E.g., .../RazorSourceGenerator/Components_Pages_Foo_razor.g.cs → Components/Pages/Foo.razor
+    /// This handles #line-less infrastructure code (EventCallback.Factory.Create, TypeInference).
+    /// </summary>
+    private static string? TryDeriveRazorPathFromGenerated(string generatedPath)
+    {
+        // Find the RazorSourceGenerator segment
+        var idx = generatedPath.LastIndexOf("RazorSourceGenerator", StringComparison.Ordinal);
+        if (idx < 0) return null;
+
+        var afterSlash = generatedPath.IndexOf('/', idx);
+        var fileName = afterSlash >= 0 && afterSlash + 1 < generatedPath.Length
+            ? generatedPath[(afterSlash + 1)..]
+            : Path.GetFileName(generatedPath);
+
+        // Strip _razor.g.cs suffix → Components_Pages_Foo (or just Foo for root-folder)
+        var core = fileName;
+        if (core.EndsWith("_razor.g.cs", StringComparison.OrdinalIgnoreCase))
+            core = core[..^11];
+
+        // Underscores → directory separators, last segment is the file name
+        var segments = core.Split('_');
+
+        // Root-folder component: single segment (e.g., ReceptionDataForm_razor.g.cs)
+        if (segments.Length == 1)
+            return segments[0] + ".razor";
+
+        if (segments.Length < 2) return null;
+
+        var dirParts = segments.Take(segments.Length - 1);
+        var fileNamePart = segments.Last();
+
+        return string.Join("/", dirParts) + "/" + fileNamePart + ".razor";
     }
 
     /// <summary>
