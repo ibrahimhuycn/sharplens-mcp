@@ -8,6 +8,8 @@ A Model Context Protocol (MCP) server providing **67 AI-optimized tools** for .N
 
 Built for AI coding agents - provides compiler-accurate code understanding that AI cannot infer from reading source files alone.
 
+**Now with Blazor/Razor (.razor) support** — semantic analysis, navigation, and diagnostics on `.razor` component files.
+
 ## Installation
 
 ### Via NuGet (Recommended)
@@ -85,8 +87,49 @@ Claude Code has native LSP support for basic navigation (go-to-definition, find 
 | `ROSLYN_TIMEOUT_SECONDS` | Timeout for long-running operations | `30` |
 | `ROSLYN_MAX_DIAGNOSTICS` | Maximum diagnostics to return | `100` |
 | `ROSLYN_ENABLE_SEMANTIC_CACHE` | Enable semantic model caching | `true` (set to `false` to disable) |
+| `SHARPLENS_WATCH_MODE` | Auto-sync documents on file changes (no manual `sync_documents` needed) | `false` |
+| `SHARPLENS_WATCH_DEBOUNCE_MS` | Debounce window for filesystem watcher (ms) | `300` |
+| `SHARPLENS_WATCH_EXTENSIONS` | Watched file extensions | `.cs,.razor,.cshtml` |
 
 If `DOTNET_SOLUTION_PATH` is not set, you must call the `load_solution` tool before using other tools.
+
+## Blazor / Razor Support
+
+SharpLensMcp supports `.razor` component files via `Microsoft.AspNetCore.Razor.Language`. When a Blazor project is loaded, `.razor` files are automatically discovered and compiled to C# behind the scenes. Tools operate on the generated C# and translate results back to `.razor` positions.
+
+### Supported on `.razor` files
+
+| Capability | Status |
+|---|---|
+| `get_symbol_info`, `go_to_definition` | ✅ |
+| `find_references`, `find_callers`, `find_implementations` | ✅ |
+| `get_outgoing_calls`, `get_method_overloads` | ✅ |
+| `get_containing_member`, `get_type_hierarchy` | ✅ |
+| `get_diagnostics`, `get_file_overview` | ✅ |
+| `get_type_members`, `get_method_signature` | ✅ |
+| `search_symbols`, `semantic_query` | ✅ |
+| `sync_documents` (auto-syncs `.razor` changes) | ✅ |
+| `rename_symbol` (preview) | ✅ |
+| `rename_symbol` (apply) | ❌ |
+| `extract_method`, `change_signature` | ❌ |
+| Other refactoring tools | ❌ |
+
+### How it works
+
+```
+.razor file ──► RazorProjectEngine.Process() ──► Generated C# (virtual document)
+                                                       │
+                                               Roslyn semantic APIs
+                                                       │
+                                          SourceMappings ◄──── translate back
+                                          to .razor line/col
+```
+
+The `SHARPLENS_WATCH_MODE=true` environment variable enables automatic re-sync when `.razor` files change on disk, eliminating the need for manual `sync_documents` calls.
+
+### Requirements
+
+- **.NET 10.0 SDK** required (targets `net10.0`).
 
 ## AI Agent Configuration Tips
 
@@ -293,7 +336,7 @@ Microsoft.CodeAnalysis (Roslyn)
 
 ## Requirements
 
-- **.NET 8.0 SDK or later** — works with .NET 8, 9, 10, and future versions. Analyzes any .NET 8+ project/solution.
+- **.NET 10.0 SDK** required (targets `net10.0`).
 - MCP-compatible AI agent
 
 ## Development
