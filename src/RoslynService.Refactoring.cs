@@ -271,7 +271,10 @@ public partial class RoslynService
                     newName,
                     changes,
                     preview = false,
-                    applied = true
+                    applied = true,
+                    warning = _razorDocuments.Count > 0
+                        ? "Razor rename is tree-verified via SourceMappings. Some markup attribute references (e.g. @onclick handlers) without individual mappings may not be renamed. Verify with find_references."
+                        : null
                 },
                 suggestedNextTools: new[] { "get_diagnostics to verify no issues after rename" },
                 totalCount: totalFiles,
