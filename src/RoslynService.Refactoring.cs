@@ -96,6 +96,12 @@ public partial class RoslynService
             );
         }
 
+        // When renaming from a .razor file, eagerly process ALL .razor files
+        // so Roslyn can find references across the entire solution, not just
+        // the file under the cursor.
+        if (isRazorFile)
+            EnsureAllRazorFilesLoaded();
+
         // Perform rename
         var renameOptions = new Microsoft.CodeAnalysis.Rename.SymbolRenameOptions();
         var newSolution = await Microsoft.CodeAnalysis.Rename.Renamer.RenameSymbolAsync(
@@ -242,7 +248,11 @@ public partial class RoslynService
         // For .razor files, Roslyn rename modifies the virtual C# document but
         // doesn't write changes back to the source .razor file on disk.
         // We must map C# text changes → .razor positions and patch the source.
-        if (isRazorFile)
+        // Run this even when the cursor is on a .cs file — references in .razor
+        // files also need their source files updated.
+        if (isRazorFile || solutionChanges.GetProjectChanges()
+            .SelectMany(pc => pc.GetChangedDocuments())
+            .Any(docId => _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId.Equals(docId))))
         {
             var applyResult = await ApplyRenameToRazorFilesAsync(
                 oldSolution!, newSolution, solutionChanges,

@@ -212,6 +212,21 @@ public partial class RoslynService
         _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId.Equals(docId));
 
     /// <summary>
+    /// Eagerly process all undiscovered razor files so their virtual C# documents
+    /// are in the solution. Required before cross-file operations like rename_symbol
+    /// so Roslyn can find references across the entire solution.
+    /// </summary>
+    internal void EnsureAllRazorFilesLoaded()
+    {
+        foreach (var kvp in _razorDocuments.ToList())
+        {
+            if (kvp.Value != null) continue;
+            // Lazy-load triggers processing
+            GetRazorFileInfo(kvp.Key);
+        }
+    }
+
+    /// <summary>
     /// Normalize a razor file path: convert to solution-relative with forward slashes.
     /// </summary>
     private string NormalizeRazorPath(string path)
