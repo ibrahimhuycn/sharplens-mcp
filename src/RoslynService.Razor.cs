@@ -70,30 +70,22 @@ public partial class RoslynService
     {
         var key = NormalizeRazorPath(razorFilePath);
 
-        // Compute absolute path early — FindProjectForFile needs it
-        var absPath = _solution?.FilePath != null
-            ? Path.GetFullPath(Path.Combine(
-                Path.GetDirectoryName(_solution.FilePath)!, key))
-            : Path.GetFullPath(key);
+        // Reconstruct absolute path: try stored solution dir, then each project's dir.
+        // MSBuildWorkspace may set _solution.FilePath to a different directory.
+        var absPath = Path.IsPathRooted(key) ? key : ResolveAbsolutePath(key);
 
         if (!_razorDocuments.TryGetValue(key, out var info))
         {
-            // Not yet discovered — auto-discover on first access (VS/VS Code behavior)
-            // so that tools don't require prior loading of every .razor file
-            if (!File.Exists(absPath)) return null;
-
-            var project = FindProjectForFile(absPath)
-                // Fallback: if project has no FilePath (common in test/adhoc workspaces),
-                // try any available project — the virtual document just needs a Roslyn
-                // project to attach to.
-                ?? _solution?.Projects.FirstOrDefault();
-
-            if (project == null) return null;
-
-            // Register for future access and process immediately
+            var project = FindProjectForFile(absPath) ?? _solution?.Projects.FirstOrDefault();
             _razorDocuments[key] = null!;
             info = ProcessRazorFile(absPath, project);
             return info;
+        }
+
+        if (info == null)
+        {
+            var project = FindProjectForFile(absPath) ?? _solution?.Projects.FirstOrDefault();
+            info = ProcessRazorFile(absPath, project);
         }
 
         if (info == null)
@@ -115,7 +107,7 @@ public partial class RoslynService
     {
         var razorSource = File.ReadAllText(razorAbsPath);
 
-        var engine = GetOrCreateRazorEngine(project);
+        var engine = GetOrCreateRazorEngine(project, razorAbsPath);
         var projectItem = engine.FileSystem.GetItem(razorAbsPath)!;
         var codeDoc = engine.Process(projectItem);
         var csharpDoc = codeDoc.GetCSharpDocument();
@@ -123,6 +115,7 @@ public partial class RoslynService
         var info = new RazorFileInfo
         {
             RazorFilePath = NormalizeRazorPath(razorAbsPath),
+            RazorAbsPath = razorAbsPath,
             VirtualDocumentId = default!,
             RazorSourceText = razorSource,
             GeneratedSourceText = csharpDoc.GeneratedCode!,
@@ -142,23 +135,42 @@ public partial class RoslynService
     }
 
     /// <summary>
-    /// Create a RazorProjectEngine for the given project, cached per project directory.
+    /// Create a RazorProjectEngine for a specific .razor file, computing the
+    /// correct namespace (project root + folder path — matches the Razor SDK).
+    /// VS2026/Rider do the same: namespace is derived from project root namespace
+    /// and the file's path relative to the project directory.
     /// </summary>
-    private RazorProjectEngine GetOrCreateRazorEngine(Project project)
+    private RazorProjectEngine GetOrCreateRazorEngine(Project project, string razorAbsPath)
     {
         var projectDir = Path.GetDirectoryName(project.FilePath ?? "/tmp") ?? "/tmp";
-        if (_engineCache.TryGetValue(projectDir, out var cached))
+        var rootNamespace = project.DefaultNamespace ?? project.Name;
+
+        // Compute namespace from project root + subfolder path
+        string ns = rootNamespace;
+        if (razorAbsPath.StartsWith(projectDir, PathComparison))
+        {
+            var relativePath = razorAbsPath[(projectDir.Length + 1)..];
+            var subDir = Path.GetDirectoryName(relativePath);
+            if (!string.IsNullOrEmpty(subDir))
+            {
+                var nsSuffix = subDir.Replace(Path.DirectorySeparatorChar, '.')
+                                    .Replace(Path.AltDirectorySeparatorChar, '.');
+                ns = rootNamespace + "." + nsSuffix;
+            }
+        }
+
+        var cacheKey = projectDir + "|" + ns;
+        if (_engineCache.TryGetValue(cacheKey, out var cached))
             return cached;
 
         var fileSystem = RazorProjectFileSystem.Create(projectDir);
-        var rootNamespace = project.DefaultNamespace ?? project.Name;
 
         var engine = RazorProjectEngine.Create(
             RazorConfiguration.Default,
             fileSystem,
-            builder => builder.SetNamespace(rootNamespace));
+            builder => builder.SetNamespace(ns));
 
-        _engineCache[projectDir] = engine;
+        _engineCache[cacheKey] = engine;
         return engine;
     }
 
@@ -232,10 +244,10 @@ public partial class RoslynService
     private string NormalizeRazorPath(string path)
     {
         var normalized = Path.GetFullPath(path).Replace('\\', '/');
-        if (_solution?.FilePath != null)
+        var solutionDir = _loadedSolutionDir ?? (_solution?.FilePath != null ? Path.GetDirectoryName(_solution.FilePath)?.Replace('\\', '/') : null);
+        if (solutionDir != null)
         {
-            var solutionDir = Path.GetDirectoryName(_solution.FilePath)!
-                .Replace('\\', '/');
+            solutionDir = solutionDir.Replace('\\', '/');
             if (normalized.StartsWith(solutionDir, StringComparison.OrdinalIgnoreCase))
                 normalized = normalized[(solutionDir.Length + 1)..];
         }
@@ -250,5 +262,42 @@ public partial class RoslynService
     {
         _razorDocuments.Clear();
         _engineCache.Clear();
+    }
+
+    /// <summary>
+    /// Convert a solution-relative key to an absolute path by trying the stored
+    /// solution directory, then each project's directory.
+    /// </summary>
+    private string ResolveAbsolutePath(string key)
+    {
+        if (Path.IsPathRooted(key)) return key;
+
+        // First: stored solution directory
+        if (_loadedSolutionDir != null)
+        {
+            var candidate = Path.GetFullPath(Path.Combine(_loadedSolutionDir, key));
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        // Second: try _solution.FilePath → directory
+        if (_solution?.FilePath != null)
+        {
+            var candidate = Path.GetFullPath(Path.Combine(
+                Path.GetDirectoryName(_solution.FilePath)!, key));
+            if (File.Exists(candidate)) return candidate;
+        }
+
+        // Third: try each project's directory
+        if (_solution != null)
+            foreach (var project in _solution.Projects)
+            {
+                var dir = Path.GetDirectoryName(project.FilePath);
+                if (dir == null) continue;
+                var candidate = Path.GetFullPath(Path.Combine(dir, key));
+                if (File.Exists(candidate)) return candidate;
+            }
+
+        // Fallback: current directory
+        return Path.GetFullPath(key);
     }
 }

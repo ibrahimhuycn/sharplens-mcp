@@ -6,6 +6,7 @@ namespace SharpLensMcp;
 internal sealed record RazorFileInfo
 {
     public required string RazorFilePath { get; init; }
+    public required string RazorAbsPath { get; init; }
     public required DocumentId VirtualDocumentId { get; init; }
     public required string RazorSourceText { get; init; }
     public required string GeneratedSourceText { get; init; }

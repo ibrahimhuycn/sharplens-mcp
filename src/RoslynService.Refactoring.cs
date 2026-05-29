@@ -96,10 +96,12 @@ public partial class RoslynService
             );
         }
 
-        // When renaming from a .razor file, eagerly process ALL .razor files
-        // so Roslyn can find references across the entire solution, not just
-        // the file under the cursor.
-        if (isRazorFile)
+        // Eagerly process ALL .razor files so their virtual C# documents are in the
+        // solution. This is required for Roslyn to find references across the entire
+        // solution, including from code-behind → .razor markup and vice versa.
+        // VS2026/Rider do the same — populate the workspace with razor-generated C#
+        // before any rename operation.
+        if (_razorDocuments.Count > 0)
             EnsureAllRazorFilesLoaded();
 
         // Perform rename
@@ -245,14 +247,10 @@ public partial class RoslynService
         var oldSolution = _solution; // snapshot before mutation
         _solution = newSolution;
 
-        // For .razor files, Roslyn rename modifies the virtual C# document but
-        // doesn't write changes back to the source .razor file on disk.
-        // We must map C# text changes → .razor positions and patch the source.
-        // Run this even when the cursor is on a .cs file — references in .razor
-        // files also need their source files updated.
-        if (isRazorFile || solutionChanges.GetProjectChanges()
-            .SelectMany(pc => pc.GetChangedDocuments())
-            .Any(docId => _razorDocuments.Values.Any(r => r != null && r.VirtualDocumentId.Equals(docId))))
+        // Write rename changes back to .razor source files on disk when
+        // razor-generated documents (SharpLensMcp virtual or Razor SDK source-gen)
+        // were modified by the rename.
+        if (_razorDocuments.Count > 0)
         {
             var applyResult = await ApplyRenameToRazorFilesAsync(
                 oldSolution!, newSolution, solutionChanges,
@@ -296,79 +294,97 @@ public partial class RoslynService
     /// Roslyn rename modifies virtual C# documents; we must map C# text changes
     /// back to .razor positions via SourceMappings and patch the .razor source.
     /// </summary>
-    private async Task<object?> ApplyRenameToRazorFilesAsync(
-        Solution oldSolution, Solution newSolution, SolutionChanges solutionChanges,
+    private async Task ApplyRenameToDoc(
+        Solution oldSolution, Solution newSolution, DocumentId changedDocId,
         string oldName, string newName)
     {
-        foreach (var projectChanges in solutionChanges.GetProjectChanges())
+        var oldDoc = oldSolution.GetDocument(changedDocId);
+        if (oldDoc == null) return;
+
+        // Identify which .razor file this generated doc maps to
+        RazorFileInfo? razorInfo = null;
+        bool isSharpLensDoc = IsRazorGeneratedDocument(oldDoc);
+        bool isRazorSdkDoc = oldDoc.FilePath != null
+            && oldDoc.FilePath.Contains("RazorSourceGenerator", StringComparison.Ordinal);
+
+        if (isSharpLensDoc)
+            razorInfo = _razorDocuments.Values.FirstOrDefault(
+                r => r != null && r.VirtualDocumentId.Equals(changedDocId));
+        else if (isRazorSdkDoc)
         {
-            foreach (var changedDocId in projectChanges.GetChangedDocuments())
-            {
-                var oldDoc = oldSolution.GetDocument(changedDocId);
-                if (oldDoc == null || !IsRazorGeneratedDocument(oldDoc))
-                    continue;
+            var derived = TryDeriveRazorPathFromGenerated(oldDoc.FilePath!);
+            razorInfo = derived != null
+                ? _razorDocuments.Values.FirstOrDefault(r =>
+                    r != null && r.RazorFilePath.EndsWith(derived.Replace('\\', '/'), StringComparison.OrdinalIgnoreCase))
+                : null;
+        }
 
-                var razorInfo = _razorDocuments.Values.FirstOrDefault(
-                    r => r != null && r.VirtualDocumentId.Equals(changedDocId));
-                if (razorInfo == null) continue;
+        if (razorInfo == null) return;
 
-                var newDoc = newSolution.GetDocument(changedDocId);
-                if (newDoc == null) continue;
+        var oldSource = razorInfo.RazorSourceText;
+        var oldCSharp = (await oldDoc.GetTextAsync()).ToString();
+        var razorEdits = new List<(int start, int end, string newText)>();
 
-                var oldCSharp = await oldDoc.GetTextAsync();
-                var oldText = oldCSharp.ToString();
-
-                // Scan old C# text for all occurrences of the old symbol name,
-                // map each to .razor via SourceMappings, build edits.
-                var razorText = razorInfo.RazorSourceText;
-                var razorEdits = new List<(int start, int end, string newText)>();
-
-                int pos = 0;
-                while ((pos = oldText.IndexOf(oldName, pos, StringComparison.Ordinal)) >= 0)
+                if (isSharpLensDoc)
                 {
-                    var mapping = razorInfo.CSharpDocument.SourceMappings.FirstOrDefault(m =>
-                        pos >= m.GeneratedSpan.AbsoluteIndex
-                        && pos < m.GeneratedSpan.AbsoluteIndex + m.GeneratedSpan.Length);
-
-                    if (mapping != null)
+                    // Scan old C# for oldName, map to .razor via SourceMappings
+                    int pos = 0;
+                    while ((pos = oldCSharp.IndexOf(oldName, pos, StringComparison.Ordinal)) >= 0)
                     {
-                        var fraction = (double)(pos - mapping.GeneratedSpan.AbsoluteIndex)
-                                     / Math.Max(1, mapping.GeneratedSpan.Length);
-                        var razorOffset = mapping.OriginalSpan.AbsoluteIndex
-                                        + (int)(fraction * mapping.OriginalSpan.Length);
-
-                        // Verify the razor source at this position actually contains the old name
-                        if (razorOffset + oldName.Length <= razorText.Length
-                            && string.CompareOrdinal(razorText, razorOffset, oldName, 0, oldName.Length) == 0)
+                        var mapping = razorInfo.CSharpDocument.SourceMappings.FirstOrDefault(m =>
+                            pos >= m.GeneratedSpan.AbsoluteIndex
+                            && pos < m.GeneratedSpan.AbsoluteIndex + m.GeneratedSpan.Length);
+                        if (mapping != null)
                         {
-                            razorEdits.Add((razorOffset, razorOffset + oldName.Length, newName));
+                            var frac = (double)(pos - mapping.GeneratedSpan.AbsoluteIndex) / Math.Max(1, mapping.GeneratedSpan.Length);
+                            var razorOffset = mapping.OriginalSpan.AbsoluteIndex + (int)(frac * mapping.OriginalSpan.Length);
+                            if (razorOffset + oldName.Length <= oldSource.Length
+                                && string.CompareOrdinal(oldSource, razorOffset, oldName, 0, oldName.Length) == 0)
+                            {
+                                razorEdits.Add((razorOffset, razorOffset + oldName.Length, newName));
+                            }
+                        }
+                        pos++;
+                    }
+                }
+                else if (isRazorSdkDoc)
+                {
+                    // Scan old C# for oldName, map to .razor via #line directives
+                    var syntaxTree = await oldDoc.GetSyntaxTreeAsync();
+                    if (syntaxTree != null)
+                    {
+                        int pos = 0;
+                        while ((pos = oldCSharp.IndexOf(oldName, pos, StringComparison.Ordinal)) >= 0)
+                        {
+                            var lineSpan = syntaxTree.GetLineSpan(new TextSpan(pos, oldName.Length));
+                            if ((lineSpan.Path ?? "").EndsWith(".razor", StringComparison.OrdinalIgnoreCase))
+                            {
+                                var razorOffset = GetOffset(oldSource, lineSpan.StartLinePosition.Line, lineSpan.StartLinePosition.Character);
+                                if (razorOffset + oldName.Length <= oldSource.Length
+                                    && string.CompareOrdinal(oldSource, razorOffset, oldName, 0, oldName.Length) == 0)
+                                {
+                                    razorEdits.Add((razorOffset, razorOffset + oldName.Length, newName));
+                                }
+                            }
+                            pos++;
                         }
                     }
-                    pos++;
                 }
 
-                if (razorEdits.Count == 0) continue;
+                if (razorEdits.Count == 0) return;
 
-                // Apply edits to razor source (in reverse order to preserve offsets)
-                var sb = new StringBuilder(razorText);
+                // Apply edits in reverse order to preserve offsets
+                var sb = new StringBuilder(oldSource);
                 foreach (var (start, end, newText) in razorEdits.OrderByDescending(e => e.start))
                 {
                     sb.Remove(start, end - start);
                     sb.Insert(start, newText);
                 }
 
-                // Compute absolute path to the source .razor file on disk
-                var absRazorPath = Path.IsPathRooted(razorInfo.RazorFilePath)
-                    ? razorInfo.RazorFilePath
-                    : _solution?.FilePath != null
-                        ? Path.GetFullPath(Path.Combine(
-                            Path.GetDirectoryName(_solution.FilePath)!,
-                            razorInfo.RazorFilePath))
-                        : Path.GetFullPath(razorInfo.RazorFilePath);
+                var absRazorPath = razorInfo.RazorAbsPath;
 
                 await File.WriteAllTextAsync(absRazorPath, sb.ToString());
 
-                // Re-process the .razor file to refresh the virtual C# document
                 var project = FindProjectForFile(absRazorPath)
                     ?? _solution?.Projects.FirstOrDefault();
                 if (project != null)
@@ -376,10 +392,73 @@ public partial class RoslynService
                     RemoveVirtualRazorDocument(razorInfo.RazorFilePath);
                     ProcessRazorFile(absRazorPath, project);
                 }
+    }
+
+    private async Task<object?> ApplyRenameToRazorFilesAsync(
+        Solution oldSolution, Solution newSolution, SolutionChanges solutionChanges,
+        string oldName, string newName)
+    {
+        foreach (var projectChanges in solutionChanges.GetProjectChanges())
+        {
+            foreach (var changedDocId in projectChanges.GetChangedDocuments())
+                await ApplyRenameToDoc(oldSolution, newSolution, changedDocId, oldName, newName);
+        }
+
+        // Fallback: source-generated docs (Razor SDK .g.cs) aren't in GetChangedDocuments.
+        foreach (var kvp in _razorDocuments.ToList())
+        {
+            var ri = kvp.Value ?? GetRazorFileInfo(kvp.Key);
+            if (ri == null) continue;
+
+
+            if (!ri.RazorSourceText.Contains(oldName, StringComparison.Ordinal)) continue;
+            if (!ri.GeneratedSourceText.Contains(oldName, StringComparison.Ordinal)) continue;
+
+            var razorEdits = new List<(int start, int end, string newText)>();
+            var genText = ri.GeneratedSourceText;
+            int genPos = 0, foundMappings = 0;
+            while ((genPos = genText.IndexOf(oldName, genPos, StringComparison.Ordinal)) >= 0)
+            {
+                var mapping = ri.CSharpDocument.SourceMappings.FirstOrDefault(m =>
+                    genPos >= m.GeneratedSpan.AbsoluteIndex
+                    && genPos < m.GeneratedSpan.AbsoluteIndex + m.GeneratedSpan.Length);
+                if (mapping != null)
+                {
+                    var frac = (double)(genPos - mapping.GeneratedSpan.AbsoluteIndex) / Math.Max(1, mapping.GeneratedSpan.Length);
+                    var razorOffset = mapping.OriginalSpan.AbsoluteIndex + (int)(frac * mapping.OriginalSpan.Length);
+                    if (razorOffset + oldName.Length <= ri.RazorSourceText.Length
+                        && string.CompareOrdinal(ri.RazorSourceText, razorOffset, oldName, 0, oldName.Length) == 0)
+                    {
+                        razorEdits.Add((razorOffset, razorOffset + oldName.Length, newName));
+                        foundMappings++;
+                    }
+                }
+                genPos++;
+            }
+
+            if (razorEdits.Count == 0) continue;
+
+            var sb = new StringBuilder(ri.RazorSourceText);
+            foreach (var (start, end, newText) in razorEdits.OrderByDescending(e => e.start))
+            {
+                sb.Remove(start, end - start);
+                sb.Insert(start, newText);
+            }
+
+            var absRazorPath = ri.RazorAbsPath;
+
+            await File.WriteAllTextAsync(absRazorPath, sb.ToString());
+
+            var project = FindProjectForFile(absRazorPath)
+                ?? _solution?.Projects.FirstOrDefault();
+            if (project != null)
+            {
+                RemoveVirtualRazorDocument(ri.RazorFilePath);
+                ProcessRazorFile(absRazorPath, project);
             }
         }
 
-        return null; // null = success, continue with normal flow
+        return null;
     }
 
     public async Task<object> ExtractInterfaceAsync(string filePath, int line, int column, string interfaceName, List<string>? includeMemberNames)

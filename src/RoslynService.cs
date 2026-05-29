@@ -31,6 +31,8 @@ public partial class RoslynService
     private readonly SemaphoreSlim _syncLock = new(1, 1);
 
     private DateTime? _solutionLoadedAt;
+    private string? _loadedSolutionPath;
+    private string? _loadedSolutionDir;
 
     public RoslynService()
     {
@@ -286,6 +288,8 @@ public partial class RoslynService
         _solution = await msbuild.OpenSolutionAsync(solutionPath);
         _workspace = msbuild;
         _solutionLoadedAt = DateTime.UtcNow;
+        _loadedSolutionPath = solutionPath;
+        _loadedSolutionDir = Path.GetDirectoryName(Path.GetFullPath(solutionPath));
 
         StartFileWatcher();
 

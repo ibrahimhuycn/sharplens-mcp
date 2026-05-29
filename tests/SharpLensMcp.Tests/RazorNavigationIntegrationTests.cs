@@ -277,4 +277,55 @@ public class RazorNavigationIntegrationTests
         }
         finally { try { Directory.Delete(d, true); } catch { } }
     }
+
+    [Fact]
+    public async Task RenameSymbol_FromCodeBehind_PropagatesToRazorFile()
+    {
+        if (!Microsoft.Build.Locator.MSBuildLocator.IsRegistered)
+            Microsoft.Build.Locator.MSBuildLocator.RegisterDefaults();
+
+        var dir = Path.Combine(Path.GetTempPath(), "rt2-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(dir);
+            // Minimal .csproj with Blazor SDK
+            File.WriteAllText(Path.Combine(dir, "TestProj.csproj"),
+                "<Project Sdk=\"Microsoft.NET.Sdk.Razor\"><PropertyGroup><TargetFramework>net10.0</TargetFramework></PropertyGroup></Project>");
+            var slnPath = Path.Combine(dir, "Test.slnx");
+            File.WriteAllText(slnPath, $"<Solution><Project Path=\"TestProj.csproj\" /></Solution>");
+
+            var razorPath = Path.Combine(dir, "Counter.razor");
+            var csPath = razorPath + ".cs";
+            File.WriteAllText(csPath, "public partial class Counter { public void SaveChanges() { } }");
+            File.WriteAllText(razorPath, "@code {\n    void Use() { SaveChanges(); }\n}\n<button @onclick=\"SaveChanges\">Save</button>");
+
+            var svc = new RoslynService();
+            var slnResult = await svc.LoadSolutionAsync(slnPath);
+            var slnJ = Newtonsoft.Json.Linq.JObject.FromObject(slnResult);
+            Assert.True((bool)slnJ["success"]!, $"Load failed: {slnJ["error"]}");
+
+            var csContent = File.ReadAllText(csPath);
+            var saveCol = csContent.IndexOf("SaveChanges");
+            var result = await svc.RenameSymbolAsync(csPath, 0, saveCol, "WriteChanges", preview: false);
+            var j = Newtonsoft.Json.Linq.JObject.FromObject(result);
+            Assert.True((bool)j["success"]!, $"Err: {j["error"]}");
+            Assert.True((bool)j["data"]!["applied"]!);
+
+            Assert.Contains("WriteChanges", File.ReadAllText(razorPath));
+            Assert.DoesNotContain("SaveChanges", File.ReadAllText(razorPath));
+            Assert.Contains("WriteChanges", File.ReadAllText(csPath));
+        }
+        finally { try { Directory.Delete(dir, true); } catch { } }
+    }
+
+    private static void Exec(string cmd, string args)
+    {
+        var psi = new System.Diagnostics.ProcessStartInfo(cmd, args)
+        {
+            RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false
+        };
+        using var p = System.Diagnostics.Process.Start(psi)!;
+        p.WaitForExit();
+        if (p.ExitCode != 0) throw new Exception($"{cmd} {args} failed:\n{p.StandardError.ReadToEnd()}");
+    }
 }
