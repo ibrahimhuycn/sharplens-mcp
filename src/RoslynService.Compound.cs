@@ -534,6 +534,8 @@ public partial class RoslynService
     {
         EnsureSolutionLoaded();
 
+        var isRazor = filePath.EndsWith(".razor", StringComparison.OrdinalIgnoreCase);
+
         Document document;
         try
         {
@@ -601,7 +603,7 @@ public partial class RoslynService
         return CreateSuccessResponse(
             data: new
             {
-                filePath = FormatPath(document.FilePath),
+                filePath = isRazor ? filePath : FormatPath(document.FilePath),
                 projectName = document.Project.Name,
                 @namespace = namespaceDecl?.Name.ToString(),
                 diagnosticSummary = diagnostics,

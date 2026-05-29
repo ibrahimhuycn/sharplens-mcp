@@ -23,23 +23,13 @@ public partial class RoslynService
     {
         EnsureSolutionLoaded();
 
-        var maxFilesToShow = maxFiles ?? 20; // Default to 20 files to prevent huge outputs
-        var verbosityLevel = verbosity?.ToLower() ?? "summary"; // Default to summary to prevent token explosions
+        var maxFilesToShow = maxFiles ?? 20;
+        var verbosityLevel = verbosity?.ToLower() ?? "summary";
 
-        Document document;
-        try
-        {
-            document = await GetDocumentAsync(filePath);
-        }
-        catch (FileNotFoundException)
-        {
-            return CreateErrorResponse(
-                ErrorCodes.FileNotInSolution,
-                $"File not found in solution: {filePath}",
-                hint: "Check the file path or reload the solution",
-                context: new { filePath }
-            );
-        }
+        var ctx = await PrepareRazorAwareContext(filePath, line, column);
+        if (ctx is not RazorContext rc) return ctx!;
+        var document = rc.Document;
+        var isRazorFile = rc.IsRazor;
 
         var semanticModel = await document.GetSemanticModelAsync();
         if (semanticModel == null)
@@ -62,10 +52,8 @@ public partial class RoslynService
             );
         }
 
-        var position = GetPosition(syntaxTree, line, column);
-
         // Try to find symbol with improved logic and tolerance
-        var (symbol, debugInfo) = TryFindSymbolForRename(syntaxTree, semanticModel, position, line, column);
+        var (symbol, debugInfo) = TryFindSymbolForRename(syntaxTree, semanticModel, rc.Offset, line, column);
 
         if (symbol == null)
         {
@@ -135,6 +123,11 @@ public partial class RoslynService
                 if (oldDocument == null || newDocument == null)
                     continue;
 
+                var isRazorDoc = IsRazorGeneratedDocument(oldDocument);
+                var displayPath = isRazorDoc
+                    ? _razorDocuments.Values.First(r => r != null && r.VirtualDocumentId == oldDocument.Id).RazorFilePath
+                    : FormatPath(oldDocument.FilePath);
+
                 var oldText = await oldDocument.GetTextAsync();
                 var newText = await newDocument.GetTextAsync();
 
@@ -149,7 +142,7 @@ public partial class RoslynService
                         // Summary: Just file path and count
                         changes.Add(new
                         {
-                            filePath = FormatPath(oldDocument.FilePath),
+                            filePath = displayPath,
                             changeCount = textChanges.Count()
                         });
                     }
@@ -169,7 +162,7 @@ public partial class RoslynService
 
                         changes.Add(new
                         {
-                            filePath = FormatPath(oldDocument.FilePath),
+                            filePath = displayPath,
                             changeCount = textChanges.Count(),
                             changes = documentChanges,
                             truncated = textChanges.Count() > 20
@@ -195,7 +188,7 @@ public partial class RoslynService
 
                         changes.Add(new
                         {
-                            filePath = FormatPath(oldDocument.FilePath),
+                            filePath = displayPath,
                             changeCount = textChanges.Count(),
                             changes = documentChanges,
                             truncated = textChanges.Count() > 20
