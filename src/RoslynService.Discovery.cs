@@ -93,6 +93,8 @@ public partial class RoslynService
 
             foreach (var document in project.Documents)
             {
+                if (IsRazorGeneratedDocument(document)) continue;
+
                 var syntaxTree = await document.GetSyntaxTreeAsync();
                 if (syntaxTree == null) continue;
 
@@ -172,6 +174,8 @@ public partial class RoslynService
 
             foreach (var document in project.Documents)
             {
+                if (IsRazorGeneratedDocument(document)) continue;
+
                 var syntaxTree = await document.GetSyntaxTreeAsync();
                 if (syntaxTree == null) continue;
 

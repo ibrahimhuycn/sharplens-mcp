@@ -238,18 +238,23 @@ public partial class RoslynService
                     applied = false
                 },
                 suggestedNextTools: new[] { "rename_symbol with preview=false to apply changes" },
-                totalCount: totalFiles,
-                returnedCount: filesShown
-            );
+            totalCount: totalFiles,
+            returnedCount: filesShown
+        );
         }
 
+        // === APPLY PATH ===
+
+        // Eagerly load all .razor virtual docs before rename so Roslyn finds
+        // references across the entire solution.
+        if (_razorDocuments.Count > 0)
+            EnsureAllRazorFilesLoaded();
+
         // Apply changes by updating the solution
-        var oldSolution = _solution; // snapshot before mutation
+        var oldSolution = _solution;
         _solution = newSolution;
 
-        // Write rename changes back to .razor source files on disk when
-        // razor-generated documents (SharpLensMcp virtual or Razor SDK source-gen)
-        // were modified by the rename.
+        // Write .razor source changes to disk via SourceMappings + #line directives
         if (_razorDocuments.Count > 0)
         {
             var applyResult = await ApplyRenameToRazorFilesAsync(
@@ -261,35 +266,28 @@ public partial class RoslynService
 
         // Write non-razor changes to disk via workspace
         var workspace = _workspace!;
-        if (workspace.TryApplyChanges(newSolution))
-        {
-            return CreateSuccessResponse(
-                data: new
-                {
-                    symbolName = symbol.Name,
-                    symbolKind = symbol.Kind.ToString(),
-                    newName,
-                    changes,
-                    preview = false,
-                    applied = true,
-                    warning = _razorDocuments.Count > 0
-                        ? "Razor rename is tree-verified via SourceMappings. Some markup attribute references (e.g. @onclick handlers) without individual mappings may not be renamed. Verify with find_references."
-                        : null
-                },
-                suggestedNextTools: new[] { "get_diagnostics to verify no issues after rename" },
-                totalCount: totalFiles,
-                returnedCount: filesShown
-            );
-        }
-        else
-        {
-            return CreateErrorResponse(
-                ErrorCodes.AnalysisFailed,
-                "Failed to apply changes",
-                hint: "Workspace.TryApplyChanges returned false. Changes may conflict with current workspace state.",
-                context: new { symbolName = symbol.Name, newName, totalFiles, totalChanges }
-            );
-        }
+        var wsApplied = workspace.TryApplyChanges(newSolution);
+        var warnings = new List<string>();
+        if (_razorDocuments.Count > 0)
+            warnings.Add("Razor rename is tree-verified via SourceMappings. Some markup attribute references (e.g. @onclick handlers) without individual mappings may not be renamed. Verify with find_references.");
+        if (!wsApplied)
+            warnings.Add("Workspace.TryApplyChanges returned false — .cs files may not have been written to disk. .razor files were updated. Call sync_documents or reload the solution.");
+
+        return CreateSuccessResponse(
+            data: new
+            {
+                symbolName = symbol.Name,
+                symbolKind = symbol.Kind.ToString(),
+                newName,
+                changes,
+                preview = false,
+                applied = true,
+                warning = warnings.Count > 0 ? warnings : null
+            },
+            suggestedNextTools: new[] { "get_diagnostics to verify no issues after rename" },
+            totalCount: totalFiles,
+            returnedCount: filesShown
+        );
     }
 
     /// <summary>

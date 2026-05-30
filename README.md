@@ -128,9 +128,12 @@ SharpLensMcp supports `.razor` component files via `Microsoft.AspNetCore.Razor.L
 | `search_symbols`, `semantic_query` | ✅ |
 | `sync_documents` (auto-syncs `.razor` changes) | ✅ |
 | `rename_symbol` (preview) | ✅ |
-| `rename_symbol` (apply) | ❌ |
+| `rename_symbol` (apply) | ✅ (SourceMapping-verified, writes to disk) |
+| `analyze_data_flow`, `analyze_control_flow` | ✅ |
 | `extract_method`, `change_signature` | ❌ |
 | Other refactoring tools | ❌ |
+
+> **Note:** `rename_symbol` on `.razor` is tree-safe — every edit is verified against SourceMappings before writing. A `warning` field in the response indicates potential markup attribute misses (`@onclick` handlers without individual SourceMappings). Verify with `find_references` after rename.
 
 ### How it works
 
